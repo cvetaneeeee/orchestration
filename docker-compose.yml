@@ -1,0 +1,60 @@
+services:
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: dagster
+      POSTGRES_PASSWORD: dagster_password
+      POSTGRES_DB: dagster
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - dagster_network
+    restart: always
+
+  dagster-webserver:
+    build: .
+    image: orchestration-dagster:latest
+    environment:
+      DAGSTER_HOME: /opt/dagster/dagster_home
+      DAGSTER_PG_PASSWORD: dagster_password
+      POSTGRES_USER: dagster
+      POSTGRES_PASSWORD: dagster_password
+      POSTGRES_DB: dagster
+      POSTGRES_HOST: postgres
+      DB_LOC: /source_code/db.duckdb
+    ports:
+      - "3000:3000"
+    volumes:
+      - duckdb_data:/source_code
+    networks:
+      - dagster_network
+    depends_on:
+      - postgres
+    restart: always
+
+  dagster-daemon:
+    image: orchestration-dagster:latest
+    command: ["dagster-daemon", "run", "-w", "workspace.yaml"]
+    environment:
+      DAGSTER_HOME: /opt/dagster/dagster_home
+      DAGSTER_PG_PASSWORD: dagster_password
+      POSTGRES_USER: dagster
+      POSTGRES_PASSWORD: dagster_password
+      POSTGRES_DB: dagster
+      POSTGRES_HOST: postgres
+      DB_LOC: /source_code/db.duckdb
+    volumes:
+      - duckdb_data:/source_code
+    networks:
+      - dagster_network
+    depends_on:
+      - postgres
+    restart: always
+
+networks:
+  dagster_network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  duckdb_data:
