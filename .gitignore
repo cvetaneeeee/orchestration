@@ -213,3 +213,6 @@ __marimo__/
 .src/orchestration/source_code/__pycache__/
 .src/orchestration/source_code/.env
 .tmp*
+
+
+.dagster
