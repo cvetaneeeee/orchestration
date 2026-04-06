@@ -3,6 +3,7 @@ import asyncio
 import pandas as pd
 import dagster as dg
 from dagster_duckdb import DuckDBResource
+from sqlalchemy import create_engine, text
 from orchestration.source_code.odds_async import run_odds_async
 
 
@@ -123,3 +124,64 @@ def upsert_odds_data(duckdb: DuckDBResource, df: pd.DataFrame) -> str:
         return "No data to upsert."
     upsert_df(duckdb=duckdb, df=df, table="historical_odds")
     return "Upsert completed successfully"
+
+def upsert_postgres_df(pg_url: str, df: pd.DataFrame, table: str):
+    if not pg_url or df.empty:
+        print("Missing Postgres URL or empty DataFrame. Skipping PG upsert.")
+        return
+        
+    engine = create_engine(pg_url)
+    expected_columns = [
+        'id', 'bookie', 'competition', 'season',
+        'home_team', 'away_team',
+        'opening_time', 'closing_time',
+        'home_win_opening', 'draw_opening', 'away_win_opening',
+        'home_win_closing', 'draw_closing', 'away_win_closing',
+        'home_score', 'away_score', 'updated_at'
+    ]
+    df_to_insert = df[expected_columns].copy()
+    df_to_insert = df_to_insert.drop_duplicates(subset=['id'], keep='last')
+
+    with engine.begin() as conn:
+        # Create main table if not exists with primary key
+        conn.execute(text(f"""
+            CREATE TABLE IF NOT EXISTS {table} (
+                id TEXT PRIMARY KEY,
+                bookie TEXT,
+                competition TEXT,
+                season TEXT,
+                home_team TEXT,
+                away_team TEXT,
+                opening_time TIMESTAMP,
+                closing_time TIMESTAMP,
+                home_win_opening FLOAT,
+                draw_opening FLOAT,
+                away_win_opening FLOAT,
+                home_win_closing FLOAT,
+                draw_closing FLOAT,
+                away_win_closing FLOAT,
+                home_score TEXT,
+                away_score TEXT,
+                inserted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP
+            );
+        """))
+        
+        # Write to temporary table
+        temp_table = f"temp_{table}"
+        df_to_insert.to_sql(temp_table, con=conn, if_exists='replace', index=False)
+        
+        # Upsert mapping
+        set_clause = ",\n".join([f"{col} = EXCLUDED.{col}" for col in expected_columns if col != 'id'])
+        
+        conn.execute(text(f"""
+            INSERT INTO {table} ({', '.join(expected_columns)})
+            SELECT * FROM {temp_table}
+            ON CONFLICT (id) DO UPDATE SET
+            {set_clause};
+        """))
+        
+        # Drop temp table
+        conn.execute(text(f"DROP TABLE {temp_table};"))
+        print(f"✅ Upserted {len(df)} rows into Postgres {table} table.")
+

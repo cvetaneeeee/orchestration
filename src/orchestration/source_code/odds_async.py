@@ -12,7 +12,7 @@ from playwright.async_api import async_playwright, Page, Response
 from tenacity import retry, stop_after_attempt, wait_fixed, wait_exponential, retry_if_exception_type, RetryError
 
 # Limit concurrent browser sessions (tune based on system/resources)
-concurrency_limit = 20
+concurrency_limit = 10
 semaphore = asyncio.Semaphore(concurrency_limit)
 config_dict = config.current_settings
 

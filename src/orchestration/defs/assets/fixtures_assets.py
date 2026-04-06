@@ -1,7 +1,9 @@
 import pandas as pd
 import dagster as dg
 from dagster_duckdb import DuckDBResource
+from sqlalchemy import create_engine, text
 from orchestration.source_code.rapidapi_fixtures import get_league_response, build_dataframe
+from orchestration.source_code.config import EXT_POSTGRES_URL
 
 
 def create_table(duckdb: DuckDBResource, table_name: str):
@@ -96,7 +98,7 @@ def create_fixtures_table(duckdb: DuckDBResource) -> str:
     return "fixtures"
 
 
-@dg.asset(kinds={"duckdb"}, ins={"df": dg.AssetIn("extract_fixtures")}) #, key=["target", "fixtures", "upsert_fixtures_data"])
+@dg.asset(kinds={"duckdb"}, ins={"df": dg.AssetIn("extract_fixtures")}, deps=["create_fixtures_table"])
 def upsert_fixtures_data(duckdb: DuckDBResource, df: pd.DataFrame) -> str:
     """
     Upsert the fixtures data into the fixtures table.
@@ -106,3 +108,59 @@ def upsert_fixtures_data(duckdb: DuckDBResource, df: pd.DataFrame) -> str:
 
     upsert_df(duckdb=duckdb, df=df, table="fixtures")
     return "Upsert completed successfully."
+
+
+@dg.asset(kinds={"python"}, deps=["upsert_fixtures_data"], auto_materialize_policy=dg.AutoMaterializePolicy.eager())
+def load_fixtures_to_postgres(context: dg.AssetExecutionContext, duckdb: DuckDBResource):
+    """
+    Load fixtures from DuckDB into the external Postgres instance.
+    """
+    with duckdb.get_connection() as con:
+        df = con.execute("SELECT * FROM fixtures").fetchdf()
+    context.log.info(f"📦 Loaded {len(df)} fixtures rows from DuckDB")
+
+    if not EXT_POSTGRES_URL or df.empty:
+        context.log.warning("Missing Postgres URL or empty DataFrame. Skipping.")
+        return "Skipped."
+
+    expected_columns = [
+        'weekday', 'round', 'date', 'home_team', 'home_goals',
+        'away_goals', 'away_team', 'league', 'season', 'updated_at'
+    ]
+    df_to_insert = df[expected_columns].copy().drop_duplicates(
+        subset=['round', 'home_team', 'away_team'], keep='last'
+    )
+
+    engine = create_engine(EXT_POSTGRES_URL)
+    with engine.begin() as conn:
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS fixtures (
+                weekday TEXT,
+                round TEXT,
+                date TIMESTAMP,
+                home_team TEXT,
+                home_goals INTEGER,
+                away_goals INTEGER,
+                away_team TEXT,
+                league TEXT,
+                season TEXT,
+                inserted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP,
+                PRIMARY KEY (round, home_team, away_team)
+            );
+        """))
+
+        temp_table = "temp_fixtures"
+        df_to_insert.to_sql(temp_table, con=conn, if_exists='replace', index=False)
+
+        set_clause = ",\n".join([f"{col} = EXCLUDED.{col}" for col in expected_columns if col not in ('round', 'home_team', 'away_team')])
+        conn.execute(text(f"""
+            INSERT INTO fixtures ({', '.join(expected_columns)})
+            SELECT * FROM {temp_table}
+            ON CONFLICT (round, home_team, away_team) DO UPDATE SET
+            {set_clause};
+        """))
+        conn.execute(text(f"DROP TABLE {temp_table};"))
+
+    context.log.info(f"✅ Upserted {len(df_to_insert)} rows into Postgres fixtures table.")
+    return f"Postgres load completed: {len(df_to_insert)} rows"

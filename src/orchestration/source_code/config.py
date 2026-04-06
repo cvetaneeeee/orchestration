@@ -3,6 +3,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 DB_LOC = os.getenv("DB_LOC")
+EXT_POSTGRES_URL = os.getenv("EXT_POSTGRES_URL")
 
 # odds configs
 bookie: str = '16'

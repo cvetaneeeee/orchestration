@@ -30,3 +30,9 @@ run_coordinator:
 scheduler:
   module: dagster.core.scheduler
   class: DagsterDaemonScheduler
+
+auto_materialize:
+  enabled: true
+
+sensors:
+  use_threads: true

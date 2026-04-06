@@ -3,7 +3,15 @@ FROM ghcr.io/astral-sh/uv:python3.11-bookworm-slim
 # Install system dependencies including curl
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
+    unzip \
     && rm -rf /var/lib/apt/lists/*
+
+# Install DuckDB CLI
+RUN curl -fsSL "https://github.com/duckdb/duckdb/releases/latest/download/duckdb_cli-linux-amd64.zip" \
+    -o /tmp/duckdb.zip \
+    && unzip /tmp/duckdb.zip -d /usr/local/bin/ \
+    && chmod +x /usr/local/bin/duckdb \
+    && rm /tmp/duckdb.zip
 
 # Set working directory for the code
 WORKDIR /opt/dagster/app

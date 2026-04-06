@@ -1,6 +1,9 @@
 import pandas as pd
 import dagster as dg
 from itertools import product
+from sqlalchemy import create_engine, text
+from dagster_duckdb import DuckDBResource
+from orchestration.source_code.config import EXT_POSTGRES_URL
 
 
 @dg.asset(required_resource_keys={"duckdb"}, deps=["upsert_odds_asset"], auto_materialize_policy=dg.AutoMaterializePolicy.eager())
@@ -373,3 +376,38 @@ def fact_odds_data(context):
         # con.register("pivoted_temp", pivot_df)
         # con.execute("CREATE OR REPLACE TABLE fct__surprises_per_club AS SELECT * FROM pivoted_temp")
     context.log.info("Stored results in fct__surprises_per_club.")
+
+
+@dg.asset(kinds={"python"}, deps=["fact_odds_data"], auto_materialize_policy=dg.AutoMaterializePolicy.eager())
+def load_facts_to_postgres(context: dg.AssetExecutionContext, duckdb: DuckDBResource):
+    """
+    Loads all 3 fact tables from DuckDB into the external Postgres instance.
+    Tables are fully replaced since they are pre-aggregated pivot tables with
+    dynamic column schemas (one column per season/round).
+    """
+    if not EXT_POSTGRES_URL:
+        context.log.warning("EXT_POSTGRES_URL not set. Skipping Postgres load.")
+        return "Skipped."
+
+    fact_tables = [
+        "fct__surprises_per_season",
+        "fct__favourites_success_per_season",
+        "fct__surprises_per_club",
+    ]
+
+    engine = create_engine(EXT_POSTGRES_URL)
+    with duckdb.get_connection() as con:
+        for table in fact_tables:
+            df = con.execute(f"SELECT * FROM {table}").fetchdf()
+            context.log.info(f"📦 Loaded {len(df)} rows from DuckDB '{table}'")
+            if df.empty:
+                context.log.warning(f"'{table}' is empty — skipping.")
+                continue
+            with engine.begin() as pg_conn:
+                # Drop and replace — pivot tables have dynamic columns per season
+                # so replace is safer than upsert here
+                pg_conn.execute(text(f"DROP TABLE IF EXISTS {table};"))
+                df.to_sql(table, con=pg_conn, if_exists='replace', index=False)
+            context.log.info(f"✅ Loaded {len(df)} rows into Postgres '{table}'")
+
+    return f"Postgres fact load completed: {', '.join(fact_tables)}"
